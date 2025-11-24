@@ -1,4 +1,5 @@
 import os
+import random
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -16,7 +17,7 @@ TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 LOCAL = os.environ.get("LOCAL")
 SESSION = httpx.Client(timeout=30)
-MAX_RUN_TIME = 5 * 60  # 5 minutes
+MAX_RUN_TIME = 5 * 60
 
 BASE_DATA_FOLDER = "natural_earth"
 OUTPUT_FOLDER = "map"
@@ -30,7 +31,7 @@ COUNTRIES_SHP = f"{BASE_DATA_FOLDER}/ne_50m_admin_0_countries.shp"
 
 FIG_SIZE = (12, 9)
 DPI = 300
-ZOOM_DEFAULT = 7.19
+ZOOM_DEFAULT = 9.5
 OCEAN_COLOR = "#c4e6ff"
 LAND_COLOR = "lightgreen"
 BORDER_COLOR = "gray"
@@ -42,13 +43,13 @@ GRID_LINESTYLE = "--"
 GRID_LABELS = True
 
 MARKER_COLOR = "red"
-MARKER_SIZE = 14
+MARKER_SIZE = 11.19
 MARKER_SYMBOL = "o"
 
-TITLE_FONTSIZE = 20
+TITLE_FONTSIZE = 19.5
 TITLE_WEIGHT = "bold"
 TITLE_Y = 0.975
-INFO_FONTSIZE = 12
+INFO_FONTSIZE = 12.5
 INFO_Y_START = 0.935
 INFO_LINE_SPACING = 0.025
 TEXT_COLOR = "#000000"
@@ -59,10 +60,9 @@ COASTLINE = Reader(COASTLINE_SHP)
 LAND = Reader(LAND_SHP)
 COUNTRIES = Reader(COUNTRIES_SHP)
 
-MAX_ENTRIES_PER_DB = 1_00_000  # 100K ~40ish MB
+MAX_ENTRIES_PER_DB = 1_00_000
 
 
-# ---------------- Database management ----------------
 def get_db_connection():
     existing_files = [
         f
@@ -101,7 +101,7 @@ def get_db_connection():
         code TEXT,
         latitude REAL,
         longitude REAL,
-        depth REAL
+        depth REAL,
         sentAt TEXT
     )
     """)
@@ -112,7 +112,23 @@ def get_db_connection():
 conn, cur = get_db_connection()
 
 
-# ---------------- Utilities ----------------
+def get_total_earthquake_count():
+    total = 0
+    existing_files = [
+        f
+        for f in os.listdir(DB_FOLDER)
+        if f.startswith("database_") and f.endswith(".db")
+    ]
+    for db_file in existing_files:
+        db_path = os.path.join(DB_FOLDER, db_file)
+        temp_conn = sqlite3.connect(db_path)
+        temp_cur = temp_conn.cursor()
+        temp_cur.execute("SELECT COUNT(*) FROM quakes")
+        total += temp_cur.fetchone()[0]
+        temp_conn.close()
+    return total
+
+
 def saveEarthquake(i):
     global conn, cur
     p = i["properties"]
@@ -141,7 +157,7 @@ def saveEarthquake(i):
             g[1],
             g[0],
             g[2],
-            str(datetime.now(timezone.utc)),
+            datetime.now(timezone.utc).isoformat(),
         ),
     )
     conn.commit()
@@ -166,7 +182,42 @@ def normalize_longitude(lon):
     return lon
 
 
-# ---------------- Telegram ----------------
+def earthquake_emoji(magnitude: float) -> str:
+    """
+       Returns a relevant emoji based on earthquake magnitude severity.
+       Only uses: ❓🟢🟡🟠🔴🌋🌎💥🌊
+
+       Severity scale:
+       < 2.0   → Micro (not felt)             🟢
+       2.0–3.9   → Minor (rarely felt)          🟡
+    4.0–4.9   → Light (noticeable shaking)   🟠
+    5.0–5.9   → Moderate (some damage)       🔴
+    6.0–6.9   → Strong (destructive)         💥
+    7.0–7.9   → Major (widespread damage)    🌋
+    8.0–8.9   → Great (devastating)          🌎💥
+      ≥ 9.0   → Rare/Epic (catastrophic)     🌎💥🌊
+       < 0    → Invalid                        ❓
+    """
+    if magnitude < 0:
+        return "❓"
+    elif magnitude < 2.0:
+        return "🟢"  # Barely felt or not felt
+    elif magnitude < 4.0:
+        return "🟡"  # Minor, usually no damage
+    elif magnitude < 5.0:
+        return "🟠"  # Felt by most, light shaking
+    elif magnitude < 6.0:
+        return "🔴"  # Moderate – can cause damage to weak buildings
+    elif magnitude < 7.0:
+        return "💥"  # Strong – destructive in populated areas
+    elif magnitude < 8.0:
+        return "🌋"  # Major – serious damage over large areas
+    elif magnitude < 9.0:
+        return "🌎💥"  # Great – devastating, near total destruction
+    else:
+        return "🌎💥🌊"  # Extremely rare (like 1960 Chile 9.5) – can cause tsunamis
+
+
 def sendToTelegram(i, retries=5):
     p = i["properties"]
     g = i["geometry"]["coordinates"]
@@ -181,10 +232,12 @@ def sendToTelegram(i, retries=5):
     dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S UTC")
     time_str = dt.strftime("%d %b %Y, %H:%M UTC")
 
-    caption = f"""
-<b>{p.get("title", p.get("place", "No title found"))}</b>
+    count = get_total_earthquake_count() + 1
 
-ID: <code>{i["id"]}</code>
+    caption = f"""
+{earthquake_emoji(p["mag"])} <b>{p.get("title", p.get("place", "No title found"))}</b>
+
+ID: <code>{i["id"]}</code> | <code>{count}</code>
 Time: <b>{time_str}</b>
 Status: <i><b>{p["status"].title()}</b></i>  |  <b><a href="{p["url"]}">More Details</a></b>
 """.strip()
@@ -215,7 +268,6 @@ Status: <i><b>{p["status"].title()}</b></i>  |  <b><a href="{p["url"]}">More Det
     exit(1)
 
 
-# ---------------- Map plotting ----------------
 def plot_offline_map(lat, lon, earthquake_data, zoom_deg=ZOOM_DEFAULT):
     if zoom_deg is None or zoom_deg <= 0:
         zoom_deg = ZOOM_DEFAULT
@@ -326,21 +378,21 @@ def plot_offline_map(lat, lon, earthquake_data, zoom_deg=ZOOM_DEFAULT):
     print(f"Saved → {filename}", flush=True)
 
 
-# ---------------- Processing ----------------
 def process_earthquake(i):
     loc = i["geometry"]["coordinates"]
     lon, lat, _ = loc
-    print(lat, lon, flush=True)
+    print(f"Location: {i['properties']['title']}", flush=True)
     plot_offline_map(lat, lon, i)
     sendToTelegram(i)
 
 
-# ---------------- Main ----------------
-if __name__ == "__main__":
+def main():
     r = SESSION.get(
-        "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_week.geojson"
+        f"https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_{'month' if LOCAL else 'week'}.geojson"
     ).json()["features"]
     r = sorted(r, key=lambda x: x["properties"]["time"])
+
+    print(f"Found {len(r)} earthquake data")
 
     cur.execute("SELECT id FROM quakes")
     existing_ids = {row[0] for row in cur.fetchall()}
@@ -348,6 +400,8 @@ if __name__ == "__main__":
     startTime = time.time()
 
     new_quakes = [i for i in r if i["id"] not in existing_ids]
+    print(f"Need to update {len(new_quakes)}")
+
     for i in new_quakes:
         if i["properties"]["type"] != "earthquake":
             continue
@@ -358,6 +412,16 @@ if __name__ == "__main__":
         print()
 
         if not LOCAL and time.time() - startTime >= MAX_RUN_TIME:
+            print(f"\nTimes UP. Exitting...")
             break
+
+
+if __name__ == "__main__":
+    startTime = time.time()
+    x = 1
+    while not (not LOCAL and time.time() - startTime >= MAX_RUN_TIME):
+        main()
+        print(f"\nRan {x} times")
+        x += 1
 
     print(f"\nFinished Running...", flush=True)
