@@ -14,6 +14,7 @@ load_dotenv()
 
 TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
+LOCAL = os.environ.get("LOCAL")
 SESSION = httpx.Client(timeout=30)
 MAX_RUN_TIME = 5 * 60  # 5 minutes
 
@@ -180,6 +181,7 @@ def sendToTelegram(i, retries=5):
 
     caption = f"""
 <b>{p.get("title", p.get("place", "No title found"))}</b>
+
 ID: <code>{i["id"]}</code>
 Time: <b>{time_str}</b>
 Status: <i><b>{p["status"].title()}</b></i>  |  <b><a href="{p["url"]}">More Details</a></b>
@@ -334,7 +336,7 @@ def process_earthquake(i):
 # ---------------- Main ----------------
 if __name__ == "__main__":
     r = SESSION.get(
-        "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_month.geojson"
+        "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_week.geojson"
     ).json()["features"]
     r = sorted(r, key=lambda x: x["properties"]["time"])
 
@@ -351,5 +353,7 @@ if __name__ == "__main__":
         i["properties"]["place"] = x[0].upper() + x[1:]
 
         process_earthquake(i)
-        if time.time() - startTime >= MAX_RUN_TIME:
+        print()
+
+        if not LOCAL and time.time() - startTime >= MAX_RUN_TIME:
             break
