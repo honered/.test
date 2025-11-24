@@ -59,7 +59,7 @@ COASTLINE = Reader(COASTLINE_SHP)
 LAND = Reader(LAND_SHP)
 COUNTRIES = Reader(COUNTRIES_SHP)
 
-MAX_ENTRIES_PER_DB = 10000
+MAX_ENTRIES_PER_DB = 1_00_000  # 100K ~40ish MB
 
 
 # ---------------- Database management ----------------
