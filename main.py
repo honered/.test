@@ -30,7 +30,7 @@ COUNTRIES_SHP = f"{BASE_DATA_FOLDER}/ne_50m_admin_0_countries.shp"
 
 FIG_SIZE = (12, 9)
 DPI = 300
-ZOOM_DEFAULT = 2.0
+ZOOM_DEFAULT = 7.19
 OCEAN_COLOR = "#c4e6ff"
 LAND_COLOR = "lightgreen"
 BORDER_COLOR = "gray"
