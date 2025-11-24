@@ -199,17 +199,17 @@ Status: <i><b>{p["status"].title()}</b></i>  |  <b><a href="{p["url"]}">More Det
                 )
             res_json = res.json()
             if res_json.get("ok"):
-                print(f"Sent to Telegram: {i['id']}")
+                print(f"Sent to Telegram: {i['id']}", flush=True)
                 saveEarthquake(i)
                 return
             else:
-                print(f"Telegram API error: {res_json}")
+                print(f"Telegram API error: {res_json}", flush=True)
         except Exception as e:
-            print(f"Error sending to Telegram (attempt {attempt + 1}): {e}")
+            print(f"Error sending to Telegram (attempt {attempt + 1}): {e}", flush=True)
         attempt += 1
         time.sleep(2)
 
-    print(f"Failed to send {i['id']} after {retries} attempts. Exiting.")
+    print(f"Failed to send {i['id']} after {retries} attempts. Exiting.", flush=True)
     exit(1)
 
 
@@ -321,14 +321,14 @@ def plot_offline_map(lat, lon, earthquake_data, zoom_deg=ZOOM_DEFAULT):
     plt.subplots_adjust(top=TOP_MARGIN)
     plt.savefig(full_path, dpi=DPI, bbox_inches="tight")
     plt.close()
-    print(f"Saved → {filename}")
+    print(f"Saved → {filename}", flush=True)
 
 
 # ---------------- Processing ----------------
 def process_earthquake(i):
     loc = i["geometry"]["coordinates"]
     lon, lat, _ = loc
-    print(lat, lon)
+    print(lat, lon, flush=True)
     plot_offline_map(lat, lon, i)
     sendToTelegram(i)
 
