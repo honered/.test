@@ -1,5 +1,4 @@
-# .github/workflows/run_and_push.yml
-name: Run Earthquake Bot
+name: Run
 
 on:
   workflow_dispatch:
@@ -7,20 +6,18 @@ on:
 jobs:
   run-and-push:
     runs-on: ubuntu-latest
-    env:
-      CHAT_ID: ${{ secrets.CHAT_ID }}
-      TOKEN: ${{ secrets.TOKEN }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # full history for force push
+          token: ${{ secrets.PAT }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          # python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
         run: |
@@ -29,20 +26,19 @@ jobs:
 
       - name: Run main script
         run: python main.py
+        env:
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          TOKEN: ${{ secrets.TOKEN }}
 
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Commit DB changes
+      - name: Commit and Push changes
         run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
           git add db/
-          git commit -m "Update database" || echo "No changes to commit"
-
-      - name: Force push using PAT
-        env:
-          PAT: ${{ secrets.PAT_TOKEN }}
-        run: |
-          git remote set-url origin https://x-access-token:${PAT}@github.com/${{ github.repository }}.git
-          git push origin HEAD:main --force
+          git commit -m "$(date) Update" || echo "No changes to commit"
+          git push --set-upstream origin cache -f
