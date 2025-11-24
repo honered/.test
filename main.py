@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import time
 from datetime import datetime
 
 import cartopy.crs as ccrs
@@ -12,12 +13,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TOKEN = os.environ.get("TOKEN")
-CHAT_ID = "5596148289"
+CHAT_ID = os.environ.get("CHAT_ID")
 SESSION = httpx.Client(timeout=30)
+MAX_RUN_TIME = 5 * 60  # 5 minutes
 
 BASE_DATA_FOLDER = "natural_earth"
 OUTPUT_FOLDER = "map"
+DB_FOLDER = "db"
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+os.makedirs(DB_FOLDER, exist_ok=True)
 
 COASTLINE_SHP = f"{BASE_DATA_FOLDER}/ne_50m_coastline.shp"
 LAND_SHP = f"{BASE_DATA_FOLDER}/ne_50m_land.shp"
@@ -54,32 +58,61 @@ COASTLINE = Reader(COASTLINE_SHP)
 LAND = Reader(LAND_SHP)
 COUNTRIES = Reader(COUNTRIES_SHP)
 
-conn = sqlite3.connect("earthquakes.db")
-cur = conn.cursor()
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS quakes (
-    id TEXT PRIMARY KEY,
-    mag REAL,
-    place TEXT,
-    time INTEGER,
-    updated INTEGER,
-    url TEXT,
-    detail TEXT,
-    status TEXT,
-    tsunami INTEGER,
-    sig INTEGER,
-    net TEXT,
-    code TEXT,
-    latitude REAL,
-    longitude REAL,
-    depth REAL
-)
-""")
-conn.commit()
+MAX_ENTRIES_PER_DB = 10000
 
 
+# ---------------- Database management ----------------
+def get_db_connection():
+    existing_files = [
+        f
+        for f in os.listdir(DB_FOLDER)
+        if f.startswith("database_") and f.endswith(".db")
+    ]
+    existing_files.sort()
+    if existing_files:
+        latest_file = existing_files[-1]
+        latest_path = os.path.join(DB_FOLDER, latest_file)
+        conn = sqlite3.connect(latest_path)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM quakes")
+        count = cur.fetchone()[0]
+        if count >= MAX_ENTRIES_PER_DB:
+            new_index = int(latest_file.split("_")[1].split(".")[0]) + 1
+            new_path = os.path.join(DB_FOLDER, f"database_{new_index}.db")
+            conn = sqlite3.connect(new_path)
+    else:
+        conn = sqlite3.connect(os.path.join(DB_FOLDER, "database_1.db"))
+
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS quakes (
+        id TEXT PRIMARY KEY,
+        mag REAL,
+        place TEXT,
+        time INTEGER,
+        updated INTEGER,
+        url TEXT,
+        detail TEXT,
+        status TEXT,
+        tsunami INTEGER,
+        sig INTEGER,
+        net TEXT,
+        code TEXT,
+        latitude REAL,
+        longitude REAL,
+        depth REAL
+    )
+    """)
+    conn.commit()
+    return conn, cur
+
+
+conn, cur = get_db_connection()
+
+
+# ---------------- Utilities ----------------
 def saveEarthquake(i):
+    global conn, cur
     p = i["properties"]
     g = i["geometry"]["coordinates"]
 
@@ -110,6 +143,11 @@ def saveEarthquake(i):
     )
     conn.commit()
 
+    cur.execute("SELECT COUNT(*) FROM quakes")
+    if cur.fetchone()[0] >= MAX_ENTRIES_PER_DB:
+        conn.close()
+        conn, cur = get_db_connection()
+
 
 def format_coordinates(lat, lon):
     lat_dir = "N" if lat >= 0 else "S"
@@ -125,7 +163,8 @@ def normalize_longitude(lon):
     return lon
 
 
-def sendToTelegram(i):
+# ---------------- Telegram ----------------
+def sendToTelegram(i, retries=5):
     p = i["properties"]
     g = i["geometry"]["coordinates"]
 
@@ -138,28 +177,44 @@ def sendToTelegram(i):
     )
     dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S UTC")
     time_str = dt.strftime("%d %b %Y, %H:%M UTC")
+
     caption = f"""
 <b>{p.get("title", p.get("place", "No title found"))}</b>
-ID: <code>{p["code"]}</code>
+ID: <code>{i["id"]}</code>
 Time: <b>{time_str}</b>
 Status: <i><b>{p["status"].title()}</b></i>  |  <b><a href="{p["url"]}">More Details</a></b>
 """.strip()
 
     url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
+    attempt = 0
+    while attempt < retries:
+        try:
+            with open(full_path, "rb") as img:
+                res = SESSION.post(
+                    url,
+                    data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"},
+                    files={"photo": img},
+                )
+            res_json = res.json()
+            if res_json.get("ok"):
+                print(f"Sent to Telegram: {i['id']}")
+                saveEarthquake(i)
+                return
+            else:
+                print(f"Telegram API error: {res_json}")
+        except Exception as e:
+            print(f"Error sending to Telegram (attempt {attempt + 1}): {e}")
+        attempt += 1
+        time.sleep(2)
 
-    with open(full_path, "rb") as img:
-        SESSION.post(
-            url,
-            data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"},
-            files={"photo": img},
-        )
-        print(f"Sent to Telegram", p["code"])
+    print(f"Failed to send {i['id']} after {retries} attempts. Exiting.")
+    exit(1)
 
 
+# ---------------- Map plotting ----------------
 def plot_offline_map(lat, lon, earthquake_data, zoom_deg=ZOOM_DEFAULT):
     if zoom_deg is None or zoom_deg <= 0:
         zoom_deg = ZOOM_DEFAULT
-
     lon = normalize_longitude(lon)
 
     event_id = earthquake_data.get("id", "unknown")
@@ -169,25 +224,17 @@ def plot_offline_map(lat, lon, earthquake_data, zoom_deg=ZOOM_DEFAULT):
     depth = earthquake_data["geometry"]["coordinates"][2]
 
     time_str = datetime.fromtimestamp(time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S UTC")
-
     filename = f"{event_id}.png"
     full_path = os.path.join(OUTPUT_FOLDER, filename)
 
     proj = ccrs.PlateCarree(central_longitude=lon)
-
     fig = plt.figure(figsize=FIG_SIZE)
     ax = plt.axes(projection=proj)
 
     ax.set_extent(
-        [
-            lon - zoom_deg,
-            lon + zoom_deg,
-            lat - zoom_deg * 0.75,
-            lat + zoom_deg * 0.75,
-        ],
+        [lon - zoom_deg, lon + zoom_deg, lat - zoom_deg * 0.75, lat + zoom_deg * 0.75],
         crs=ccrs.PlateCarree(),
     )
-
     ax.set_facecolor(OCEAN_COLOR)
 
     ax.add_feature(
@@ -253,7 +300,6 @@ def plot_offline_map(lat, lon, earthquake_data, zoom_deg=ZOOM_DEFAULT):
         f"{format_coordinates(lat, lon)}",
         f"{time_str}",
     ]
-
     current_y = INFO_Y_START
     for index, line in enumerate(info_lines):
         fig.text(
@@ -276,28 +322,34 @@ def plot_offline_map(lat, lon, earthquake_data, zoom_deg=ZOOM_DEFAULT):
     print(f"Saved → {filename}")
 
 
+# ---------------- Processing ----------------
 def process_earthquake(i):
     loc = i["geometry"]["coordinates"]
     lon, lat, _ = loc
     print(lat, lon)
     plot_offline_map(lat, lon, i)
     sendToTelegram(i)
-    saveEarthquake(i)
 
 
+# ---------------- Main ----------------
 if __name__ == "__main__":
     r = SESSION.get(
         "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_month.geojson"
     ).json()["features"]
-
     r = sorted(r, key=lambda x: x["properties"]["time"])
 
     cur.execute("SELECT id FROM quakes")
     existing_ids = {row[0] for row in cur.fetchall()}
 
-    new_quakes = [i for i in r if i["id"] not in existing_ids]
+    startTime = time.time()
 
+    new_quakes = [i for i in r if i["id"] not in existing_ids]
     for i in new_quakes:
         if i["properties"]["type"] != "earthquake":
             continue
+        x = i["properties"]["place"]
+        i["properties"]["place"] = x[0].upper() + x[1:]
+
         process_earthquake(i)
+        if time.time() - startTime >= MAX_RUN_TIME:
+            break
