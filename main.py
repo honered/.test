@@ -1,0 +1,303 @@
+import os
+import sqlite3
+from datetime import datetime
+
+import cartopy.crs as ccrs
+import httpx
+import matplotlib.pyplot as plt
+from cartopy.feature import ShapelyFeature
+from cartopy.io.shapereader import Reader
+from dotenv import load_dotenv
+
+load_dotenv()
+
+TOKEN = os.environ.get("TOKEN")
+CHAT_ID = "5596148289"
+SESSION = httpx.Client(timeout=30)
+
+BASE_DATA_FOLDER = "natural_earth"
+OUTPUT_FOLDER = "map"
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+COASTLINE_SHP = f"{BASE_DATA_FOLDER}/ne_50m_coastline.shp"
+LAND_SHP = f"{BASE_DATA_FOLDER}/ne_50m_land.shp"
+COUNTRIES_SHP = f"{BASE_DATA_FOLDER}/ne_50m_admin_0_countries.shp"
+
+FIG_SIZE = (12, 9)
+DPI = 300
+ZOOM_DEFAULT = 2.0
+OCEAN_COLOR = "#c4e6ff"
+LAND_COLOR = "lightgreen"
+BORDER_COLOR = "gray"
+COASTLINE_COLOR = "black"
+COASTLINE_WIDTH = 0.9
+GRID_COLOR = "gray"
+GRID_ALPHA = 0.7
+GRID_LINESTYLE = "--"
+GRID_LABELS = True
+
+MARKER_COLOR = "red"
+MARKER_SIZE = 14
+MARKER_SYMBOL = "o"
+
+TITLE_FONTSIZE = 20
+TITLE_WEIGHT = "bold"
+TITLE_Y = 0.975
+INFO_FONTSIZE = 12
+INFO_Y_START = 0.935
+INFO_LINE_SPACING = 0.025
+TEXT_COLOR = "#000000"
+
+TOP_MARGIN = 0.85
+
+COASTLINE = Reader(COASTLINE_SHP)
+LAND = Reader(LAND_SHP)
+COUNTRIES = Reader(COUNTRIES_SHP)
+
+conn = sqlite3.connect("earthquakes.db")
+cur = conn.cursor()
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS quakes (
+    id TEXT PRIMARY KEY,
+    mag REAL,
+    place TEXT,
+    time INTEGER,
+    updated INTEGER,
+    url TEXT,
+    detail TEXT,
+    status TEXT,
+    tsunami INTEGER,
+    sig INTEGER,
+    net TEXT,
+    code TEXT,
+    latitude REAL,
+    longitude REAL,
+    depth REAL
+)
+""")
+conn.commit()
+
+
+def saveEarthquake(i):
+    p = i["properties"]
+    g = i["geometry"]["coordinates"]
+
+    cur.execute(
+        """
+        INSERT OR REPLACE INTO quakes (
+            id, mag, place, time, updated, url, detail, status,
+            tsunami, sig, net, code, latitude, longitude, depth
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """,
+        (
+            i["id"],
+            p.get("mag"),
+            p.get("place"),
+            p.get("time"),
+            p.get("updated"),
+            p.get("url"),
+            p.get("detail"),
+            p.get("status"),
+            p.get("tsunami"),
+            p.get("sig"),
+            p.get("net"),
+            p.get("code"),
+            g[1],
+            g[0],
+            g[2],
+        ),
+    )
+    conn.commit()
+
+
+def format_coordinates(lat, lon):
+    lat_dir = "N" if lat >= 0 else "S"
+    lon_dir = "E" if lon >= 0 else "W"
+    return f"{abs(lat):.4f}°{lat_dir}, {abs(lon):.4f}°{lon_dir}"
+
+
+def normalize_longitude(lon):
+    while lon > 180:
+        lon -= 360
+    while lon < -180:
+        lon += 360
+    return lon
+
+
+def sendToTelegram(i):
+    p = i["properties"]
+    g = i["geometry"]["coordinates"]
+
+    event_id = i["id"]
+    filename = f"{event_id}.png"
+    full_path = os.path.join(OUTPUT_FOLDER, filename)
+
+    time_str = datetime.fromtimestamp(p["time"] / 1000).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
+    dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S UTC")
+    time_str = dt.strftime("%d %b %Y, %H:%M UTC")
+    caption = f"""
+<b>{p.get("title", p.get("place", "No title found"))}</b>
+ID: <code>{p["code"]}</code>
+Time: <b>{time_str}</b>
+Status: <i><b>{p["status"].title()}</b></i>  |  <b><a href="{p["url"]}">More Details</a></b>
+""".strip()
+
+    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
+
+    with open(full_path, "rb") as img:
+        SESSION.post(
+            url,
+            data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"},
+            files={"photo": img},
+        )
+        print(f"Sent to Telegram", p["code"])
+
+
+def plot_offline_map(lat, lon, earthquake_data, zoom_deg=ZOOM_DEFAULT):
+    if zoom_deg is None or zoom_deg <= 0:
+        zoom_deg = ZOOM_DEFAULT
+
+    lon = normalize_longitude(lon)
+
+    event_id = earthquake_data.get("id", "unknown")
+    place = earthquake_data["properties"].get("place", "Unknown Location")
+    mag = earthquake_data["properties"].get("mag", 0)
+    time_ms = earthquake_data["properties"].get("time", 0)
+    depth = earthquake_data["geometry"]["coordinates"][2]
+
+    time_str = datetime.fromtimestamp(time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    filename = f"{event_id}.png"
+    full_path = os.path.join(OUTPUT_FOLDER, filename)
+
+    proj = ccrs.PlateCarree(central_longitude=lon)
+
+    fig = plt.figure(figsize=FIG_SIZE)
+    ax = plt.axes(projection=proj)
+
+    ax.set_extent(
+        [
+            lon - zoom_deg,
+            lon + zoom_deg,
+            lat - zoom_deg * 0.75,
+            lat + zoom_deg * 0.75,
+        ],
+        crs=ccrs.PlateCarree(),
+    )
+
+    ax.set_facecolor(OCEAN_COLOR)
+
+    ax.add_feature(
+        ShapelyFeature(
+            LAND.geometries(),
+            ccrs.PlateCarree(),
+            facecolor=LAND_COLOR,
+            edgecolor="none",
+        )
+    )
+    ax.add_feature(
+        ShapelyFeature(
+            COUNTRIES.geometries(),
+            ccrs.PlateCarree(),
+            facecolor="none",
+            edgecolor=BORDER_COLOR,
+            linewidth=0.6,
+        )
+    )
+    ax.add_feature(
+        ShapelyFeature(
+            COASTLINE.geometries(),
+            ccrs.PlateCarree(),
+            edgecolor=COASTLINE_COLOR,
+            facecolor="none",
+            linewidth=COASTLINE_WIDTH,
+        )
+    )
+
+    gl = ax.gridlines(
+        draw_labels=GRID_LABELS,
+        linewidth=0.7,
+        color=GRID_COLOR,
+        alpha=GRID_ALPHA,
+        linestyle=GRID_LINESTYLE,
+    )
+    gl.top_labels = gl.right_labels = False
+
+    plt.plot(
+        lon,
+        lat,
+        color=MARKER_COLOR,
+        markersize=MARKER_SIZE,
+        marker=MARKER_SYMBOL,
+        transform=ccrs.PlateCarree(),
+        zorder=10,
+    )
+
+    fig.text(
+        0.5,
+        TITLE_Y,
+        place,
+        fontsize=TITLE_FONTSIZE,
+        fontweight=TITLE_WEIGHT,
+        ha="center",
+        va="top",
+        color=TEXT_COLOR,
+        transform=fig.transFigure,
+    )
+
+    info_lines = [
+        f"Magnitude: {mag:.1f} | Depth: {depth:.1f} km",
+        f"{format_coordinates(lat, lon)}",
+        f"{time_str}",
+    ]
+
+    current_y = INFO_Y_START
+    for index, line in enumerate(info_lines):
+        fig.text(
+            0.5,
+            current_y,
+            line,
+            fontsize=INFO_FONTSIZE,
+            ha="center",
+            va="top",
+            color=TEXT_COLOR,
+            alpha=0.85,
+            weight="normal" if index != 2 else "bold",
+            transform=fig.transFigure,
+        )
+        current_y -= INFO_LINE_SPACING
+
+    plt.subplots_adjust(top=TOP_MARGIN)
+    plt.savefig(full_path, dpi=DPI, bbox_inches="tight")
+    plt.close()
+    print(f"Saved → {filename}")
+
+
+def process_earthquake(i):
+    loc = i["geometry"]["coordinates"]
+    lon, lat, _ = loc
+    print(lat, lon)
+    plot_offline_map(lat, lon, i)
+    sendToTelegram(i)
+    saveEarthquake(i)
+
+
+if __name__ == "__main__":
+    r = SESSION.get(
+        "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_month.geojson"
+    ).json()["features"]
+
+    r = sorted(r, key=lambda x: x["properties"]["time"])
+
+    cur.execute("SELECT id FROM quakes")
+    existing_ids = {row[0] for row in cur.fetchall()}
+
+    new_quakes = [i for i in r if i["id"] not in existing_ids]
+
+    for i in new_quakes:
+        if i["properties"]["type"] != "earthquake":
+            continue
+        process_earthquake(i)
