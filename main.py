@@ -1,7 +1,7 @@
 import os
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import cartopy.crs as ccrs
 import httpx
@@ -102,6 +102,7 @@ def get_db_connection():
         latitude REAL,
         longitude REAL,
         depth REAL
+        sentAt TEXT
     )
     """)
     conn.commit()
@@ -121,8 +122,8 @@ def saveEarthquake(i):
         """
         INSERT OR REPLACE INTO quakes (
             id, mag, place, time, updated, url, detail, status,
-            tsunami, sig, net, code, latitude, longitude, depth
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            tsunami, sig, net, code, latitude, longitude, depth, sentAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
         (
             i["id"],
@@ -140,6 +141,7 @@ def saveEarthquake(i):
             g[1],
             g[0],
             g[2],
+            str(datetime.now(timezone.utc)),
         ),
     )
     conn.commit()
