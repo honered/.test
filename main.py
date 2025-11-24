@@ -333,8 +333,7 @@ def process_earthquake(i):
     sendToTelegram(i)
 
 
-# ---------------- Main ----------------
-if __name__ == "__main__":
+def main():
     r = SESSION.get(
         "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_week.geojson"
     ).json()["features"]
@@ -357,5 +356,15 @@ if __name__ == "__main__":
 
         if not LOCAL and time.time() - startTime >= MAX_RUN_TIME:
             break
+
+
+# ---------------- Main ----------------
+if __name__ == "__main__":
+    startTime = time.time()
+    x = 1
+    while not LOCAL and time.time() - startTime >= MAX_RUN_TIME:
+        main()
+        print(f"\nRan {x} times\n")
+        x += 1
 
     print(f"\nFinished Running...", flush=True)
