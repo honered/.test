@@ -41,4 +41,4 @@ jobs:
           git config --local user.name "GitHub Action"
           git add db/
           git commit -m "$(date) Update" || echo "No changes to commit"
-          git push --set-upstream origin cache -f
+          git push --set-upstream origin main -f

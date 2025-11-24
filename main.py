@@ -357,3 +357,5 @@ if __name__ == "__main__":
 
         if not LOCAL and time.time() - startTime >= MAX_RUN_TIME:
             break
+
+    print(f"\nFinished Running...", flush=True)
