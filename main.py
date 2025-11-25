@@ -1,8 +1,7 @@
+import atexit
 import os
-import random
-import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import cartopy.crs as ccrs
 import httpx
@@ -10,20 +9,21 @@ import matplotlib.pyplot as plt
 from cartopy.feature import ShapelyFeature
 from cartopy.io.shapereader import Reader
 from dotenv import load_dotenv
+import pymongo
+from pymongo import MongoClient
 
 load_dotenv()
 
 TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 LOCAL = os.environ.get("LOCAL")
+MONGO_URI = os.environ.get("MONGO_URI")
 SESSION = httpx.Client(timeout=30)
 MAX_RUN_TIME = 5 * 60
 
 BASE_DATA_FOLDER = "natural_earth"
 OUTPUT_FOLDER = "map"
-DB_FOLDER = "db"
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-os.makedirs(DB_FOLDER, exist_ok=True)
 
 COASTLINE_SHP = f"{BASE_DATA_FOLDER}/ne_50m_coastline.shp"
 LAND_SHP = f"{BASE_DATA_FOLDER}/ne_50m_land.shp"
@@ -60,119 +60,18 @@ COASTLINE = Reader(COASTLINE_SHP)
 LAND = Reader(LAND_SHP)
 COUNTRIES = Reader(COUNTRIES_SHP)
 
-MAX_ENTRIES_PER_DB = 1_00_000
-
-
-def get_db_connection():
-    existing_files = [
-        f
-        for f in os.listdir(DB_FOLDER)
-        if f.startswith("database_") and f.endswith(".db")
-    ]
-    existing_files.sort()
-    if existing_files:
-        latest_file = existing_files[-1]
-        latest_path = os.path.join(DB_FOLDER, latest_file)
-        conn = sqlite3.connect(latest_path)
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM quakes")
-        count = cur.fetchone()[0]
-        if count >= MAX_ENTRIES_PER_DB:
-            new_index = int(latest_file.split("_")[1].split(".")[0]) + 1
-            new_path = os.path.join(DB_FOLDER, f"database_{new_index}.db")
-            conn = sqlite3.connect(new_path)
-    else:
-        conn = sqlite3.connect(os.path.join(DB_FOLDER, "database_1.db"))
-
-    cur = conn.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS quakes (
-        id TEXT PRIMARY KEY,
-        mag REAL,
-        place TEXT,
-        time INTEGER,
-        updated INTEGER,
-        url TEXT,
-        detail TEXT,
-        status TEXT,
-        tsunami INTEGER,
-        sig INTEGER,
-        net TEXT,
-        code TEXT,
-        latitude REAL,
-        longitude REAL,
-        depth REAL,
-        sentAt TEXT
-    )
-    """)
-    conn.commit()
-    return conn, cur
-
-
-conn, cur = get_db_connection()
-
+client = MongoClient(MONGO_URI)
+db = client["earthquake_db"]
+collection = db["quakes"]
+collection.create_index("id", unique=True)
 
 def get_total_earthquake_count():
-    total = 0
-    existing_files = [
-        f
-        for f in os.listdir(DB_FOLDER)
-        if f.startswith("database_") and f.endswith(".db")
-    ]
-    for db_file in existing_files:
-        db_path = os.path.join(DB_FOLDER, db_file)
-        temp_conn = sqlite3.connect(db_path)
-        temp_cur = temp_conn.cursor()
-        temp_cur.execute("SELECT COUNT(*) FROM quakes")
-        total += temp_cur.fetchone()[0]
-        temp_conn.close()
-    return total
-
-
-def saveEarthquake(i):
-    global conn, cur
-    p = i["properties"]
-    g = i["geometry"]["coordinates"]
-
-    cur.execute(
-        """
-        INSERT OR REPLACE INTO quakes (
-            id, mag, place, time, updated, url, detail, status,
-            tsunami, sig, net, code, latitude, longitude, depth, sentAt
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """,
-        (
-            i["id"],
-            p.get("mag"),
-            p.get("place"),
-            p.get("time"),
-            p.get("updated"),
-            p.get("url"),
-            p.get("detail"),
-            p.get("status"),
-            p.get("tsunami"),
-            p.get("sig"),
-            p.get("net"),
-            p.get("code"),
-            g[1],
-            g[0],
-            g[2],
-            datetime.now(timezone.utc).isoformat(),
-        ),
-    )
-    conn.commit()
-
-    cur.execute("SELECT COUNT(*) FROM quakes")
-    if cur.fetchone()[0] >= MAX_ENTRIES_PER_DB:
-        conn.close()
-        conn, cur = get_db_connection()
-
+    return collection.count_documents({"sentAt": {"$exists": True}})
 
 def format_coordinates(lat, lon):
     lat_dir = "N" if lat >= 0 else "S"
     lon_dir = "E" if lon >= 0 else "W"
     return f"{abs(lat):.4f}°{lat_dir}, {abs(lon):.4f}°{lon_dir}"
-
 
 def normalize_longitude(lon):
     while lon > 180:
@@ -180,7 +79,6 @@ def normalize_longitude(lon):
     while lon < -180:
         lon += 360
     return lon
-
 
 def earthquake_emoji(magnitude: float) -> str:
     """
@@ -216,7 +114,6 @@ def earthquake_emoji(magnitude: float) -> str:
         return "🌎💥"  # Great – devastating, near total destruction
     else:
         return "🌎💥🌊"  # Extremely rare (like 1960 Chile 9.5) – can cause tsunamis
-
 
 def sendToTelegram(i, retries=5):
     p = i["properties"]
@@ -255,7 +152,6 @@ Status: <i><b>{p["status"].title()}</b></i>  |  <b><a href="{p["url"]}">More Det
             res_json = res.json()
             if res_json.get("ok"):
                 print(f"Sent to Telegram: {i['id']}", flush=True)
-                saveEarthquake(i)
                 return
             else:
                 print(f"Telegram API error: {res_json}", flush=True)
@@ -264,9 +160,8 @@ Status: <i><b>{p["status"].title()}</b></i>  |  <b><a href="{p["url"]}">More Det
         attempt += 1
         time.sleep(2)
 
-    print(f"Failed to send {i['id']} after {retries} attempts. Exiting.", flush=True)
-    exit(1)
-
+    print(f"Failed to send {i['id']} after {retries} attempts.", flush=True)
+    raise Exception(f"Failed to send {i['id']}")
 
 def plot_offline_map(lat, lon, earthquake_data, zoom_deg=ZOOM_DEFAULT):
     if zoom_deg is None or zoom_deg <= 0:
@@ -377,59 +272,119 @@ def plot_offline_map(lat, lon, earthquake_data, zoom_deg=ZOOM_DEFAULT):
     plt.close()
     print(f"Saved → {filename}", flush=True)
 
-
-def process_earthquake(i):
-    loc = i["geometry"]["coordinates"]
-    lon, lat, _ = loc
-    print(f"Location: {i['properties']['title']}", flush=True)
-    plot_offline_map(lat, lon, i)
-    sendToTelegram(i)
-
+def cleanup_reserved(reserved_ids):
+    for rid in reserved_ids:
+        collection.delete_one({"id": rid, "sentAt": {"$exists": False}})
+    print("Cleaned up reservations", flush=True)
 
 def main():
+    reserved_ids = set()
+
+    def cleanup():
+        cleanup_reserved(reserved_ids)
+
+    atexit.register(cleanup)
+
     r = SESSION.get(
         f"https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_{'month' if LOCAL else 'week'}.geojson"
     ).json()["features"]
     r = sorted(r, key=lambda x: x["properties"]["time"])
 
-    print(f"Found {len(r)} earthquake data")
-
-    cur.execute("SELECT id FROM quakes")
-    existing_ids = {row[0] for row in cur.fetchall()}
+    print(f"Found {len(r)} earthquake data", flush=True)
 
     startTime = time.time()
 
-    new_quakes = [i for i in r if i["id"] not in existing_ids]
-    print(f"Need to update {len(new_quakes)}")
-
-    for i in new_quakes:
+    for i in r:
         if i["properties"]["type"] != "earthquake":
             continue
         x = i["properties"]["place"]
-        i["properties"]["place"] = x[0].upper() + x[1:]
+        if x:
+            i["properties"]["place"] = x[0].upper() + x[1:]
+        else:
+            i["properties"]["place"] = "Unknown"
 
-        process_earthquake(i)
-        print()
+        p = i["properties"]
+        g = i["geometry"]["coordinates"]
+
+        if collection.find_one({"id": i["id"], "sentAt": {"$exists": True}}) is not None:
+            print(f"Skipping {i['id']}, already sent", flush=True)
+            continue
+
+        now = datetime.now(timezone.utc)
+        timeout = now - timedelta(minutes=3)
+
+        result = collection.update_one(
+            {
+                "id": i["id"],
+                "sentAt": {"$exists": False},
+                "$or": [
+                    {"reserved_at": {"$exists": False}},
+                    {"reserved_at": {"$lt": timeout.isoformat()}}
+                ]
+            },
+            {"$set": {"reserved_at": now.isoformat()}},
+            upsert=True
+        )
+
+        if result.matched_count > 0 or result.upserted_id is not None:
+            reserved_ids.add(i["id"])
+            try:
+                print(f"Processing {i['id']}", flush=True)
+                plot_offline_map(g[1], g[0], i)
+                sendToTelegram(i)
+                full_data = {
+                    "id": i["id"],
+                    "mag": p.get("mag"),
+                    "place": p.get("place"),
+                    "time": p.get("time"),
+                    "updated": p.get("updated"),
+                    "url": p.get("url"),
+                    "detail": p.get("detail"),
+                    "status": p.get("status"),
+                    "tsunami": p.get("tsunami"),
+                    "sig": p.get("sig"),
+                    "net": p.get("net"),
+                    "code": p.get("code"),
+                    "latitude": g[1],
+                    "longitude": g[0],
+                    "depth": g[2],
+                    "sentAt": datetime.now(timezone.utc).isoformat(),
+                }
+                collection.replace_one({"id": i["id"]}, full_data, upsert=True)
+                print(f"{get_total_earthquake_count()}. Saved {i['id']} to MongoDB", flush=True)
+                reserved_ids.discard(i["id"])
+            except Exception as e:
+                print(f"Error processing {i['id']}: {e}", flush=True)
+                collection.delete_one({"id": i["id"], "sentAt": {"$exists": False}})
+                reserved_ids.discard(i["id"])
+        else:
+            print(f"Skipping {i['id']}, reserved by another instance", flush=True)
+
+        print("", flush=True)
 
         if not LOCAL and time.time() - startTime >= MAX_RUN_TIME:
-            print(f"\nTimes UP. Exitting...")
+            print(f"\nTime's UP. Exiting...", flush=True)
             break
 
-
 if __name__ == "__main__":
+    # client.drop_database('earthquake_db')
+
     startTime = time.time()
     x = 1
     if not LOCAL:
         print(f"Running in limited time\n", flush=True)
+
+    retries = 0
 
     while not (not LOCAL and time.time() - startTime >= MAX_RUN_TIME):
         try:
             main()
         except Exception as e:
             print(f"Error: {e}", flush=True)
-            break
+            retries+=1
+            if retries >= 3:break
 
-        print(f"\nRan {x} times")
+        print(f"\nRan {x} times", flush=True)
         x += 1
 
     print(f"\nFinished Running...", flush=True)

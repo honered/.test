@@ -2,3 +2,4 @@ cartopy
 matplotlib
 httpx
 python-dotenv
+pymongo

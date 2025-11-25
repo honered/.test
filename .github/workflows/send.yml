@@ -1,17 +1,15 @@
-name: Run
+name: code quality
 
 on:
   workflow_dispatch:
 
 jobs:
-  run-and-push:
+  run:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.PAT }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -29,11 +27,4 @@ jobs:
         env:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           TOKEN: ${{ secrets.TOKEN }}
-
-      - name: Commit and Push changes
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add db/
-          git commit -m "$(date) Update" || echo "No changes to commit"
-          git push --set-upstream origin main -f
+          MONGO_URI: ${{ secrets.MONGO_URI }}
