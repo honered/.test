@@ -420,7 +420,12 @@ if __name__ == "__main__":
     startTime = time.time()
     x = 1
     while not (not LOCAL and time.time() - startTime >= MAX_RUN_TIME):
-        main()
+        try:
+            main()
+        except Exception as e:
+            print(f"Error: {e}", flush=True)
+            break
+
         print(f"\nRan {x} times")
         x += 1
 

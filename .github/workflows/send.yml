@@ -16,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          # python-version: "3.11"
+          python-version: "3.12"
           cache: "pip"
 
       - name: Install dependencies
@@ -29,11 +29,6 @@ jobs:
         env:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           TOKEN: ${{ secrets.TOKEN }}
-
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Commit and Push changes
         run: |
