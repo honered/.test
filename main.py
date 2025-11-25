@@ -419,6 +419,9 @@ def main():
 if __name__ == "__main__":
     startTime = time.time()
     x = 1
+    if not LOCAL:
+        print(f"Running in limited time\n", flush=True)
+
     while not (not LOCAL and time.time() - startTime >= MAX_RUN_TIME):
         try:
             main()
