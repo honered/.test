@@ -1,15 +1,15 @@
 import atexit
 import os
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 import cartopy.crs as ccrs
 import httpx
 import matplotlib.pyplot as plt
+import pymongo
 from cartopy.feature import ShapelyFeature
 from cartopy.io.shapereader import Reader
 from dotenv import load_dotenv
-import pymongo
 from pymongo import MongoClient
 
 load_dotenv()
@@ -65,13 +65,31 @@ db = client["earthquake_db"]
 collection = db["quakes"]
 collection.create_index("id", unique=True)
 
+
+class Colors:
+    RESET = "\033[0m"
+    GREEN = "\033[92m"
+    BLUE = "\033[94m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    PURPLE = "\033[95m"
+    CYAN = "\033[96m"
+    BOLD = "\033[1m"
+
+
+def get_timestamp():
+    return datetime.now().strftime("%H:%M:%S")
+
+
 def get_total_earthquake_count():
     return collection.count_documents({"sentAt": {"$exists": True}})
+
 
 def format_coordinates(lat, lon):
     lat_dir = "N" if lat >= 0 else "S"
     lon_dir = "E" if lon >= 0 else "W"
     return f"{abs(lat):.4f}°{lat_dir}, {abs(lon):.4f}°{lon_dir}"
+
 
 def normalize_longitude(lon):
     while lon > 180:
@@ -80,40 +98,27 @@ def normalize_longitude(lon):
         lon += 360
     return lon
 
-def earthquake_emoji(magnitude: float) -> str:
-    """
-       Returns a relevant emoji based on earthquake magnitude severity.
-       Only uses: ❓🟢🟡🟠🔴🌋🌎💥🌊
 
-       Severity scale:
-       < 2.0   → Micro (not felt)             🟢
-       2.0–3.9   → Minor (rarely felt)          🟡
-    4.0–4.9   → Light (noticeable shaking)   🟠
-    5.0–5.9   → Moderate (some damage)       🔴
-    6.0–6.9   → Strong (destructive)         💥
-    7.0–7.9   → Major (widespread damage)    🌋
-    8.0–8.9   → Great (devastating)          🌎💥
-      ≥ 9.0   → Rare/Epic (catastrophic)     🌎💥🌊
-       < 0    → Invalid                        ❓
-    """
+def earthquake_emoji(magnitude: float) -> str:
     if magnitude < 0:
         return "❓"
     elif magnitude < 2.0:
-        return "🟢"  # Barely felt or not felt
+        return "🟢"
     elif magnitude < 4.0:
-        return "🟡"  # Minor, usually no damage
+        return "🟡"
     elif magnitude < 5.0:
-        return "🟠"  # Felt by most, light shaking
+        return "🟠"
     elif magnitude < 6.0:
-        return "🔴"  # Moderate – can cause damage to weak buildings
+        return "🔴"
     elif magnitude < 7.0:
-        return "💥"  # Strong – destructive in populated areas
+        return "💥"
     elif magnitude < 8.0:
-        return "🌋"  # Major – serious damage over large areas
+        return "🌋"
     elif magnitude < 9.0:
-        return "🌎💥"  # Great – devastating, near total destruction
+        return "🌎💥"
     else:
-        return "🌎💥🌊"  # Extremely rare (like 1960 Chile 9.5) – can cause tsunamis
+        return "🌎💥🌊"
+
 
 def sendToTelegram(i, retries=5):
     p = i["properties"]
@@ -151,17 +156,30 @@ Status: <i><b>{p["status"].title()}</b></i>  |  <b><a href="{p["url"]}">More Det
                 )
             res_json = res.json()
             if res_json.get("ok"):
-                print(f"Sent to Telegram: {i['id']}", flush=True)
+                print(
+                    f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.GREEN}Sent to Telegram:{Colors.RESET} {Colors.YELLOW}{i['id']}{Colors.RESET}",
+                    flush=True,
+                )
                 return
             else:
-                print(f"Telegram API error: {res_json}", flush=True)
+                print(
+                    f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.RED}Telegram API error:{Colors.RESET} {res_json}",
+                    flush=True,
+                )
         except Exception as e:
-            print(f"Error sending to Telegram (attempt {attempt + 1}): {e}", flush=True)
+            print(
+                f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.RED}Error sending to Telegram (attempt {Colors.YELLOW}{attempt + 1}{Colors.RED}):{Colors.RESET} {e}",
+                flush=True,
+            )
         attempt += 1
         time.sleep(2)
 
-    print(f"Failed to send {i['id']} after {retries} attempts.", flush=True)
+    print(
+        f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.RED}Failed to send {Colors.YELLOW}{i['id']}{Colors.RED} after {retries} attempts.{Colors.RESET}",
+        flush=True,
+    )
     raise Exception(f"Failed to send {i['id']}")
+
 
 def plot_offline_map(lat, lon, earthquake_data, zoom_deg=ZOOM_DEFAULT):
     if zoom_deg is None or zoom_deg <= 0:
@@ -270,12 +288,20 @@ def plot_offline_map(lat, lon, earthquake_data, zoom_deg=ZOOM_DEFAULT):
     plt.subplots_adjust(top=TOP_MARGIN)
     plt.savefig(full_path, dpi=DPI, bbox_inches="tight")
     plt.close()
-    print(f"Saved → {filename}", flush=True)
+    print(
+        f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.GREEN}Saved →{Colors.RESET} {Colors.PURPLE}{filename}{Colors.RESET}",
+        flush=True,
+    )
+
 
 def cleanup_reserved(reserved_ids):
     for rid in reserved_ids:
         collection.delete_one({"id": rid, "sentAt": {"$exists": False}})
-    print("Cleaned up reservations", flush=True)
+    print(
+        f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.BLUE}Cleaned up reservations{Colors.RESET}",
+        flush=True,
+    )
+
 
 def main():
     reserved_ids = set()
@@ -285,12 +311,23 @@ def main():
 
     atexit.register(cleanup)
 
+    sent_ids = set(
+        doc["id"] for doc in collection.find({"sentAt": {"$exists": True}}, {"id": 1})
+    )
+    print(
+        f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.BLUE}Loaded {Colors.YELLOW}{len(sent_ids)}{Colors.BLUE} already sent IDs from MongoDB{Colors.RESET}",
+        flush=True,
+    )
+
     r = SESSION.get(
         f"https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_{'month' if LOCAL else 'week'}.geojson"
     ).json()["features"]
     r = sorted(r, key=lambda x: x["properties"]["time"])
 
-    print(f"Found {len(r)} earthquake data", flush=True)
+    print(
+        f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.BLUE}Found {Colors.YELLOW}{len(r)}{Colors.BLUE} earthquake data{Colors.RESET}",
+        flush=True,
+    )
 
     startTime = time.time()
 
@@ -306,8 +343,22 @@ def main():
         p = i["properties"]
         g = i["geometry"]["coordinates"]
 
-        if collection.find_one({"id": i["id"], "sentAt": {"$exists": True}}) is not None:
-            print(f"Skipping {i['id']}, already sent", flush=True)
+        if i["id"] in sent_ids:
+            print(
+                f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.YELLOW}Skipping {Colors.PURPLE}{i['id']}{Colors.YELLOW}, already sent{Colors.RESET}",
+                flush=True,
+            )
+            continue
+
+        if (
+            collection.find_one({"id": i["id"], "sentAt": {"$exists": True}})
+            is not None
+        ):
+            sent_ids.add(i["id"])
+            print(
+                f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.YELLOW}Skipping {Colors.PURPLE}{i['id']}{Colors.YELLOW}, already sent (DB check){Colors.RESET}",
+                flush=True,
+            )
             continue
 
         now = datetime.now(timezone.utc)
@@ -319,17 +370,20 @@ def main():
                 "sentAt": {"$exists": False},
                 "$or": [
                     {"reserved_at": {"$exists": False}},
-                    {"reserved_at": {"$lt": timeout.isoformat()}}
-                ]
+                    {"reserved_at": {"$lt": timeout.isoformat()}},
+                ],
             },
             {"$set": {"reserved_at": now.isoformat()}},
-            upsert=True
+            upsert=True,
         )
 
         if result.matched_count > 0 or result.upserted_id is not None:
             reserved_ids.add(i["id"])
             try:
-                print(f"Processing {i['id']}", flush=True)
+                print(
+                    f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.BLUE}Processing {Colors.PURPLE}{i['id']}{Colors.RESET}",
+                    flush=True,
+                )
                 plot_offline_map(g[1], g[0], i)
                 sendToTelegram(i)
                 full_data = {
@@ -351,28 +405,43 @@ def main():
                     "sentAt": datetime.now(timezone.utc).isoformat(),
                 }
                 collection.replace_one({"id": i["id"]}, full_data, upsert=True)
-                print(f"{get_total_earthquake_count()}. Saved {i['id']} to MongoDB", flush=True)
+                sent_ids.add(i["id"])
+                print(
+                    f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.GREEN}{get_total_earthquake_count()}.{Colors.RESET} {Colors.BLUE}Saved {Colors.PURPLE}{i['id']}{Colors.BLUE} to MongoDB{Colors.RESET}",
+                    flush=True,
+                )
                 reserved_ids.discard(i["id"])
             except Exception as e:
-                print(f"Error processing {i['id']}: {e}", flush=True)
+                print(
+                    f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.RED}Error processing {Colors.PURPLE}{i['id']}{Colors.RED}:{Colors.RESET} {e}",
+                    flush=True,
+                )
                 collection.delete_one({"id": i["id"], "sentAt": {"$exists": False}})
                 reserved_ids.discard(i["id"])
         else:
-            print(f"Skipping {i['id']}, reserved by another instance", flush=True)
+            print(
+                f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.YELLOW}Skipping {Colors.PURPLE}{i['id']}{Colors.YELLOW}, reserved by another instance{Colors.RESET}",
+                flush=True,
+            )
 
         print("", flush=True)
 
         if not LOCAL and time.time() - startTime >= MAX_RUN_TIME:
-            print(f"\nTime's UP. Exiting...", flush=True)
+            print(
+                f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.RED}Time's UP. Exiting...{Colors.RESET}",
+                flush=True,
+            )
             break
 
-if __name__ == "__main__":
-    # client.drop_database('earthquake_db')
 
+if __name__ == "__main__":
     startTime = time.time()
     x = 1
     if not LOCAL:
-        print(f"Running in limited time\n", flush=True)
+        print(
+            f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.YELLOW}Running in limited time{Colors.RESET}\n",
+            flush=True,
+        )
 
     retries = 0
 
@@ -380,11 +449,21 @@ if __name__ == "__main__":
         try:
             main()
         except Exception as e:
-            print(f"Error: {e}", flush=True)
-            retries+=1
-            if retries >= 3:break
+            print(
+                f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.RED}Error:{Colors.RESET} {e}",
+                flush=True,
+            )
+            retries += 1
+            if retries >= 3:
+                break
 
-        print(f"\nRan {x} times", flush=True)
+        print(
+            f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.GREEN}Ran {Colors.YELLOW}{x}{Colors.GREEN} times{Colors.RESET}",
+            flush=True,
+        )
         x += 1
 
-    print(f"\nFinished Running...", flush=True)
+    print(
+        f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.GREEN}{Colors.BOLD}Finished Running...{Colors.RESET}",
+        flush=True,
+    )
