@@ -320,7 +320,7 @@ def main():
     )
 
     r = SESSION.get(
-        f"https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_{'month' if LOCAL else 'week'}.geojson"
+        f"https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_month.geojson"
     ).json()["features"]
     r = sorted(r, key=lambda x: x["properties"]["time"])
 
@@ -467,3 +467,4 @@ if __name__ == "__main__":
         f"{Colors.CYAN}[{get_timestamp()}]{Colors.RESET} {Colors.GREEN}{Colors.BOLD}Finished Running...{Colors.RESET}",
         flush=True,
     )
+
